@@ -1,31 +1,20 @@
 import os
-from openai import OpenAI
+import openai
 from flask import Flask, request, jsonify
 from datetime import datetime
 
 app = Flask(__name__)
 
-# Initialize OpenAI client with better error handling
+# Initialize OpenAI (older version)
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-
-# Check if API key exists
-if not OPENAI_API_KEY:
-    print("WARNING: OPENAI_API_KEY environment variable not set!")
-    client = None
-else:
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        print("OpenAI client initialized successfully")
-    except Exception as e:
-        print(f"Error initializing OpenAI client: {e}")
-        client = None
+openai.api_key = OPENAI_API_KEY
 
 @app.route('/')
 def home():
     return jsonify({
         'status': 'active',
         'message': 'Text-to-Image Bot with DALL-E is running!',
-        'api_configured': client is not None
+        'api_configured': OPENAI_API_KEY is not None
     })
 
 @app.route('/health')
@@ -33,14 +22,14 @@ def health():
     return jsonify({
         'status': 'healthy', 
         'timestamp': datetime.now().isoformat(),
-        'api_ready': client is not None
+        'api_ready': OPENAI_API_KEY is not None
     })
 
 @app.route('/generate', methods=['POST'])
 def generate_image():
     try:
-        # Check if client is initialized
-        if client is None:
+        # Check if API key exists
+        if not OPENAI_API_KEY:
             return jsonify({'error': 'OpenAI API key not configured'}), 500
         
         data = request.get_json()
@@ -50,20 +39,17 @@ def generate_image():
         
         prompt = data['prompt']
         size = data.get('size', '1024x1024')
-        quality = data.get('quality', 'standard')
         n = min(data.get('n', 1), 5)
         
-        # Generate image using DALL-E
-        response = client.images.generate(
-            model="dall-e-3",
+        # Generate image using older OpenAI syntax
+        response = openai.Image.create(
             prompt=prompt,
-            size=size,
-            quality=quality,
             n=n,
+            size=size
         )
         
         # Extract image URLs
-        image_urls = [image.url for image in response.data]
+        image_urls = [image['url'] for image in response['data']]
         
         return jsonify({
             'success': True,
@@ -78,7 +64,7 @@ def generate_image():
 @app.route('/generate/simple', methods=['POST'])
 def generate_simple():
     try:
-        if client is None:
+        if not OPENAI_API_KEY:
             return jsonify({'error': 'OpenAI API key not configured'}), 500
         
         data = request.get_json()
@@ -87,16 +73,14 @@ def generate_simple():
         if not prompt:
             return jsonify({'error': 'Missing prompt'}), 400
         
-        response = client.images.generate(
-            model="dall-e-3",
+        response = openai.Image.create(
             prompt=prompt,
-            size="1024x1024",
-            quality="standard",
             n=1,
+            size="1024x1024"
         )
         
         return jsonify({
-            'image_url': response.data[0].url,
+            'image_url': response['data'][0]['url'],
             'prompt': prompt
         })
         
