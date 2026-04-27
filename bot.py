@@ -1,22 +1,19 @@
 import os
-import replicate
-import base64
-from io import BytesIO
+from openai import OpenAI
 from flask import Flask, request, jsonify
 from datetime import datetime
 
 app = Flask(__name__)
 
-# Get API key from environment variable (set this in Render)
-REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN')
-if REPLICATE_API_TOKEN:
-    os.environ['REPLICATE_API_TOKEN'] = REPLICATE_API_TOKEN
+# Initialize OpenAI client
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 @app.route('/')
 def home():
     return jsonify({
         'status': 'active',
-        'message': 'Text-to-Image Bot is running!'
+        'message': 'Text-to-Image Bot with DALL-E is running!'
     })
 
 @app.route('/health')
@@ -32,30 +29,57 @@ def generate_image():
             return jsonify({'error': 'Missing prompt parameter'}), 400
         
         prompt = data['prompt']
+        size = data.get('size', '1024x1024')  # Options: 256x256, 512x512, 1024x1024
+        quality = data.get('quality', 'standard')  # Options: standard, hd
+        n = min(data.get('n', 1), 5)  # Number of images (max 5 for DALL-E 3)
         
-        # Check API token
-        if not REPLICATE_API_TOKEN:
-            return jsonify({'error': 'API token not configured'}), 500
+        # Check API key
+        if not OPENAI_API_KEY:
+            return jsonify({'error': 'OpenAI API key not configured'}), 500
         
-        # Generate image using Stable Diffusion on Replicate
-        output = replicate.run(
-            "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf",
-            input={
-                "prompt": prompt,
-                "negative_prompt": "ugly, blurry, low quality",
-                "width": 768,
-                "height": 768,
-                "num_outputs": 1,
-                "num_inference_steps": 30,
-                "guidance_scale": 7.5
-            }
+        # Generate image using DALL-E
+        response = client.images.generate(
+            model="dall-e-3",  # or "dall-e-2" for cheaper/faster
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            n=n,
         )
         
-        # Return the image URL
+        # Extract image URLs
+        image_urls = [image.url for image in response.data]
+        
         return jsonify({
             'success': True,
             'prompt': prompt,
-            'image_url': output[0]
+            'image_urls': image_urls,
+            'count': len(image_urls)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Simple text-to-image endpoint
+@app.route('/generate/simple', methods=['POST'])
+def generate_simple():
+    try:
+        data = request.get_json()
+        prompt = data.get('prompt', '')
+        
+        if not prompt:
+            return jsonify({'error': 'Missing prompt'}), 400
+        
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1,
+        )
+        
+        return jsonify({
+            'image_url': response.data[0].url,
+            'prompt': prompt
         })
         
     except Exception as e:
