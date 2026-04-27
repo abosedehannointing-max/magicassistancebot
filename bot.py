@@ -1,12 +1,9 @@
 import os
 import openai
-import telegram
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from flask import Flask, request
-import asyncio
+from flask import Flask, request, jsonify
+import requests
+from datetime import datetime
 
-# Initialize Flask for webhook (required for Render)
 app = Flask(__name__)
 
 # Get tokens from environment variables
@@ -20,106 +17,122 @@ if OPENAI_API_KEY:
 else:
     print("❌ No OpenAI API key found")
 
-# Initialize Telegram bot
-telegram_bot = None
-if TELEGRAM_BOT_TOKEN:
-    telegram_bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-    print("✅ Telegram bot token configured")
-else:
-    print("❌ No Telegram bot token found")
+# Telegram API URL
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# Flask route for health check
 @app.route('/')
 def home():
-    return {
+    return jsonify({
         'status': 'active',
         'openai_configured': OPENAI_API_KEY is not None,
         'telegram_configured': TELEGRAM_BOT_TOKEN is not None
-    }
+    })
 
 @app.route('/health')
 def health():
-    return {'status': 'healthy'}
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
-# Telegram bot command handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎨 Hello! I'm a Text-to-Image Bot!\n\n"
-        "Just send me any text description, and I'll generate an image for you!\n\n"
-        "Example: 'a cute cat wearing a wizard hat'"
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📝 How to use:\n"
-        "1. Send me any text description\n"
-        "2. I'll generate an image using DALL-E\n"
-        "3. Wait a few seconds for the result\n\n"
-        "Tips:\n"
-        "- Be descriptive for better results\n"
-        "- Include art style if you want (e.g., 'digital art', 'oil painting')\n"
-        "- Specify details like colors, mood, lighting"
-    )
-
-async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prompt = update.message.text
-    
-    # Send "typing" indicator
-    await update.message.chat.send_action(action="upload_photo")
-    
-    # Send initial message
-    status_msg = await update.message.reply_text(f"🎨 Generating image for: '{prompt[:50]}...'\n⏳ Please wait...")
-    
+@app.route(f'/webhook/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
+def webhook():
     try:
-        # Generate image using DALL-E
-        response = openai.Image.create(
-            prompt=prompt,
-            n=1,
-            size="1024x1024"
-        )
+        # Get update from Telegram
+        update = request.get_json()
         
-        image_url = response['data'][0]['url']
+        if update and 'message' in update:
+            chat_id = update['message']['chat']['id']
+            message_text = update['message'].get('text', '')
+            
+            # Handle commands
+            if message_text == '/start':
+                send_telegram_message(chat_id, 
+                    "🎨 Hello! I'm a Text-to-Image Bot!\n\n"
+                    "Just send me any text description, and I'll generate an image for you!\n\n"
+                    "Example: 'a cute cat wearing a wizard hat'")
+                return 'ok'
+            
+            elif message_text == '/help':
+                send_telegram_message(chat_id,
+                    "📝 How to use:\n"
+                    "Send me any text description\n\n"
+                    "Tips:\n"
+                    "- Be descriptive for better results\n"
+                    "- Include art style (e.g., 'digital art')\n"
+                    "- Specify colors, mood, lighting")
+                return 'ok'
+            
+            # Generate image for any other text
+            else:
+                # Send typing indicator
+                send_telegram_action(chat_id, 'upload_photo')
+                
+                # Send initial message
+                send_telegram_message(chat_id, f"🎨 Generating image for: '{message_text[:50]}...'\n⏳ Please wait...")
+                
+                try:
+                    # Generate image using DALL-E
+                    response = openai.Image.create(
+                        prompt=message_text,
+                        n=1,
+                        size="1024x1024"
+                    )
+                    
+                    image_url = response['data'][0]['url']
+                    
+                    # Send the generated image
+                    send_telegram_photo(chat_id, image_url, f"🖼️ Generated for: {message_text[:200]}")
+                    
+                except Exception as e:
+                    send_telegram_message(chat_id, f"❌ Error: {str(e)}\n\nPlease try again with a different prompt.")
         
-        # Delete status message
-        await status_msg.delete()
-        
-        # Send the generated image
-        await update.message.reply_photo(
-            photo=image_url,
-            caption=f"🖼️ Generated for: {prompt[:200]}"
-        )
+        return 'ok'
         
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error: {str(e)}\n\nPlease try again with a different prompt.")
+        print(f"Webhook error: {e}")
+        return 'error', 500
 
-# Setup webhook for Telegram
-@app.route(f'/webhook/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
-async def webhook():
-    if request.method == 'POST':
-        update = telegram.Update.de_json(request.get_json(force=True), telegram_bot)
-        # Process update
-        await update_application.process_update(update)
-        return 'ok'
-    return 'ok'
+def send_telegram_message(chat_id, text):
+    """Send a text message via Telegram"""
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    data = {'chat_id': chat_id, 'text': text}
+    try:
+        requests.post(url, json=data)
+    except Exception as e:
+        print(f"Error sending message: {e}")
 
-def main():
-    # Create Telegram application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_image))
-    
-    # Set webhook (for production on Render)
-    webhook_url = f"https://magicassistancebot.onrender.com/webhook/{TELEGRAM_BOT_TOKEN}"
-    application.bot.set_webhook(webhook_url)
-    
-    print(f"✅ Telegram bot configured with webhook: {webhook_url}")
+def send_telegram_action(chat_id, action):
+    """Send a chat action (typing, upload_photo, etc.)"""
+    url = f"{TELEGRAM_API_URL}/sendChatAction"
+    data = {'chat_id': chat_id, 'action': action}
+    try:
+        requests.post(url, json=data)
+    except Exception as e:
+        print(f"Error sending action: {e}")
+
+def send_telegram_photo(chat_id, photo_url, caption):
+    """Send a photo via Telegram"""
+    url = f"{TELEGRAM_API_URL}/sendPhoto"
+    data = {'chat_id': chat_id, 'photo': photo_url, 'caption': caption}
+    try:
+        requests.post(url, json=data)
+    except Exception as e:
+        print(f"Error sending photo: {e}")
+
+# Set webhook when the server starts
+def set_webhook():
+    if TELEGRAM_BOT_TOKEN:
+        webhook_url = f"https://magicassistancebot.onrender.com/webhook/{TELEGRAM_BOT_TOKEN}"
+        url = f"{TELEGRAM_API_URL}/setWebhook"
+        response = requests.post(url, json={'url': webhook_url})
+        if response.status_code == 200:
+            print(f"✅ Webhook set to: {webhook_url}")
+        else:
+            print(f"❌ Failed to set webhook: {response.text}")
+
+if __name__ == '__main__':
+    # Set webhook on startup
+    set_webhook()
     
     # Start Flask server
     port = int(os.environ.get('PORT', 5000))
+    print(f"🚀 Starting server on port {port}")
     app.run(host='0.0.0.0', port=port)
-
-if __name__ == '__main__':
-    main()
